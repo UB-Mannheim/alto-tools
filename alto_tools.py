@@ -8,10 +8,24 @@ import io
 import os
 import re
 import sys
+from urllib import request
+from imghdr import what
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape
+from pathlib import Path
+import shutil
 
-__version__ = '0.0.2'
+from PIL import Image, ImageOps
+from tesserocr import PyTessBaseAPI, RIL, iterate_level
+from tqdm import tqdm
 
+if sys.stdout.encoding.lower() != 'utf-8':
+
+    opts = {'encoding': 'utf-8', 'errors': 'surrogateescape', 'line_buffering': sys.stdout.line_buffering}
+    sys.stdout = io.TextIOWrapper(sys.__stdout__.buffer, **opts)
+    sys.stderr = io.TextIOWrapper(sys.__stderr__.buffer, **opts)
+
+__version__ = '0.0.3'
 
 def alto_parse(alto, **kargs):
     """ Convert ALTO xml file to element tree """
@@ -44,6 +58,79 @@ def alto_parse(alto, **kargs):
     else:
         sys.stdout.write(f'\nERROR: File "{alto.name}": namespace {xmlns} is not registered.\n')
 
+def convert_bbox_to_areapos(x1, y1, x2, y2):
+    """ Convert bbox values to area positions values """
+    return (x1, y1, x2-x1, y2-y1)
+
+
+def alto_redo_ocr(alto, xml, xmlns, lang, image, padding):
+    """ Use bbox information and tesseract to redo ocr """
+    # Find all <TextLine> elements+
+    with PyTessBaseAPI(lang=lang, psm=7) as api:
+        # Set necessary information
+        for lines in xml.iterfind('.//{%s}TextLine' % xmlns):
+            # New line after every <TextLine> element
+            x1, y1, = int(lines.attrib['HPOS']), int(lines.attrib['VPOS'])
+            x2, y2 = x1+int(lines.attrib['WIDTH']), y1+int(lines.attrib['HEIGHT'])
+            if padding:
+                if padding > x1 and padding > 2:
+                    x1, y1, x2, y2 = x1-padding, y1-padding, x2+padding, y2+padding
+            line_img = image.crop((x1, y1, x2, y2))
+            api.SetImage(line_img)
+            api.Recognize()
+            ri = api.GetIterator()
+            for word in lines.findall('*'):
+                lines.remove(word)
+            hpos, vpos, width, height = 0, 0, 0, 0
+            tailstr = lines.tail+'\t'
+            for line in iterate_level(ri, RIL.TEXTLINE):
+                string_index = 0
+                if not line.Empty(RIL.TEXTLINE):
+                    for word in iterate_level(line, RIL.WORD):
+                        content = word.GetUTF8Text(RIL.WORD).strip()
+                        wc = word.Confidence(RIL.WORD)# r == ri
+                        lx1, ly1, lx2, ly2 = word.BoundingBoxInternal(RIL.WORD)
+                        if any((hpos,vpos,width,height)):
+                            el = ET.XML(f'<SP WIDTH="{x1+lx1-(hpos+width)}" VPOS="{vpos}" HPOS="{hpos+width}"/>')
+                            el.tail = tailstr
+                            lines.append(el)
+                        hpos, vpos, width, height = convert_bbox_to_areapos(x1+lx1, y1+ly1, x1+lx2, y1+ly2)
+                        el = ET.XML(f'<String ID="string_{string_index}" '
+                                            f'HPOS="{hpos}" VPOS="{vpos}" WIDTH="{width}" HEIGHT="{height}" '
+                                            f'WC="{wc/100:.2f}" CONTENT="{escape(content)}"/>')
+                        el.tail = tailstr
+                        lines.append(el)
+                        string_index += 1
+
+
+def checkURL(url):
+    """This function checks the validity of URLs."""
+    req = request.Request(url, method='HEAD')
+    res = request.urlopen(req)
+    if res.getcode() == 200:
+        return True
+    return False
+
+def load_image(xml, xmlns, filename, imagefolder):
+    """ Load the image from file or url"""
+    if imagefolder == "":
+        try:
+            for imagefile in xml.iterfind('.//{%s}sourceImageInformation' % xmlns):
+                imagename = imagefile.find('{%s}fileName' % xmlns).text
+                if os.path.isfile(imagename):
+                   return Image.open(imagename)
+                if checkURL(imagename):
+                    return Image.open(request.urlopen(imagename))
+        except:
+            print("Could not find image filename in xml file")
+            return None
+    else:
+        filename = Path(filename)
+        imagefolder = Path(imagefolder).joinpath(filename.with_suffix('').name)
+        for fname in imagefolder.rglob('*'):
+            if what(fname):
+                return Image.open(fname)
+    return None
 
 def alto_text(xml, xmlns):
     """ Extract text content from ALTO xml file """
@@ -154,6 +241,27 @@ def parse_arguments():
                         default=False,
                         dest='text',
                         help='extract text content from ALTO file')
+    parser.add_argument('-r', '--reocr',
+                        action='store_true',
+                        default=False,
+                        dest='reocr',
+                        help='Redo ocr based on the alto bbox with tesseract')
+    parser.add_argument('--lang',
+                        default='eng',
+                        dest='lang',
+                        help='Use the language model from tesseract')
+    parser.add_argument('--padding',
+                        default='0',
+                        dest='padding',
+                        help='Extra padding around the bbox')
+    parser.add_argument('--imagefolder',
+                        default='',
+                        dest='imagefolder',
+                        help='Path to images (default: use image-filename in the sourceImageInformation section)')
+    parser.add_argument('--backup',
+                        default='',
+                        dest='backup',
+                        help='Backup original xml file')
     parser.add_argument('-l', '--illustrations',
                         action='store_true',
                         default=False,
@@ -202,7 +310,7 @@ def main():
     else:
         fnfilter = lambda fn: fn.endswith('.xml') or fn.endswith('.alto')
         confidence_sum = 0
-        for filename in walker(args.INPUT, fnfilter):
+        for filename in tqdm(walker(args.INPUT, fnfilter)):
             try:
                 if args.xml_encoding:
                     xml_encoding = args.xml_encoding
@@ -220,12 +328,25 @@ def main():
             except ET.ParseError as e:
                 print("Error parsing %s" % filename, file=sys.stderr)
                 raise(e)
-            if args.confidence:
-                confidence_sum += alto_confidence(alto, xml, xmlns)
-            if args.text:
-                alto_text(xml, xmlns)
-            if args.illustrations:
-                alto_illustrations(xml, xmlns)
+            if args.reocr:
+                image = load_image(xml, xmlns, filename, args.imagefolder)
+                padding = int(args.padding) if args.padding.isdigit() else 0
+                if image:
+                    alto_redo_ocr(alto, xml, xmlns, args.lang, image, padding)
+                    if args.backup:
+                        filename = Path(filename)
+                        backupfolder = filename.parent.joinpath('backup')
+                        backupfolder.mkdir(exist_ok=True)
+                        shutil.move(filename, backupfolder)
+                    ET.register_namespace('', xmlns)
+                    xml.write(filename, encoding='utf-8', xml_declaration=True)
+            else:
+                if args.confidence:
+                    confidence_sum += alto_confidence(alto, xml, xmlns)
+                if args.text:
+                    alto_text(xml, xmlns)
+                if args.illustrations:
+                    alto_illustrations(xml, xmlns)
         number_of_files = len(list(walker(args.INPUT, fnfilter)))
         if number_of_files >= 2:
             print(
