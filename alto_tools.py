@@ -126,8 +126,11 @@ def load_image(xml, xmlns, filename, imagefolder):
             return None
     else:
         filename = Path(filename)
-        imagefolder = Path(imagefolder).joinpath(filename.with_suffix('').name)
-        for fname in imagefolder.rglob('*'):
+        if imagefolder in [".","./"]:
+            imagefolder = filename.parent
+        else:
+            imagefolder = Path(imagefolder)
+        for fname in imagefolder.rglob(filename.with_suffix('').name+'*'):
             if what(fname):
                 return Image.open(fname)
     return None
@@ -259,7 +262,8 @@ def parse_arguments():
                         dest='imagefolder',
                         help='Path to images (default: use image-filename in the sourceImageInformation section)')
     parser.add_argument('--backup',
-                        default='',
+                        action='store_true',
+                        default=False,
                         dest='backup',
                         help='Backup original xml file')
     parser.add_argument('-l', '--illustrations',
@@ -334,10 +338,9 @@ def main():
                 if image:
                     alto_redo_ocr(alto, xml, xmlns, args.lang, image, padding)
                     if args.backup:
-                        filename = Path(filename)
-                        backupfolder = filename.parent.joinpath('backup')
+                        backupfolder = Path(filename).parent.joinpath('backup')
                         backupfolder.mkdir(exist_ok=True)
-                        shutil.move(filename, backupfolder)
+                        shutil.move(filename, str(backupfolder.resolve()))
                     ET.register_namespace('', xmlns)
                     xml.write(filename, encoding='utf-8', xml_declaration=True)
             else:
