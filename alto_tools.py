@@ -163,20 +163,26 @@ def checkURL(url):
 
 def load_image(xml, xmlns, filename, imagefolder):
     """ Load the image from file or url"""
-    if imagefolder == "":
+    if imagefolder == "" or imagefolder.startswith("https://") or imagefolder.startswith("http://"):
         try:
-            for imagefile in xml.iterfind('.//{%s}sourceImageInformation' % xmlns):
-                imagename = imagefile.find('{%s}fileName' % xmlns).text
-                if os.path.isfile(imagename):
-                   return Image.open(imagename)
-                if checkURL(imagename):
-                    return Image.open(request.urlopen(imagename))
+            if imagefolder == "":
+                for imagefile in xml.iterfind('.//{%s}sourceImageInformation' % xmlns):
+                    imagename = imagefile.find('{%s}fileName' % xmlns).text
+                    if os.path.isfile(imagename):
+                       return Image.open(imagename)
+                    if checkURL(imagename):
+                        return Image.open(request.urlopen(imagename))
+            else:
+                for ext in ['.jpg', '.png', '.tiff', '.tif', '.jp2']:
+                    imagename = imagefolder+"/"+filename.replace(".xml", ext)
+                    if checkURL(imagename):
+                        return Image.open(request.urlopen(imagename))
         except:
             print("Could not find image filename in xml file")
             return None
     else:
         filename = Path(filename)
-        if imagefolder in [".","./"]:
+        if imagefolder in [".", "./"]:
             imagefolder = filename.parent
         else:
             imagefolder = Path(imagefolder)
