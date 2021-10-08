@@ -15,7 +15,7 @@ from xml.sax.saxutils import escape
 from pathlib import Path
 import shutil
 
-from PIL import Image, ImageOps
+from PIL import Image
 from tesserocr import PyTessBaseAPI, RIL, iterate_level
 from tqdm import tqdm
 
@@ -26,6 +26,7 @@ if sys.stdout.encoding.lower() != 'utf-8':
     sys.stderr = io.TextIOWrapper(sys.__stderr__.buffer, **opts)
 
 __version__ = '0.0.3'
+
 
 def alto_parse(alto, **kargs):
     """ Convert ALTO xml file to element tree """
@@ -58,23 +59,56 @@ def alto_parse(alto, **kargs):
     else:
         sys.stdout.write(f'\nERROR: File "{alto.name}": namespace {xmlns} is not registered.\n')
 
+
 def convert_bbox_to_areapos(x1, y1, x2, y2):
     """ Convert bbox values to area positions values """
     return (x1, y1, x2-x1, y2-y1)
 
 
-def alto_redo_ocr(alto, xml, xmlns, lang, image, padding):
+def alto_redo_ocr(alto, xml, xmlns, lang, image, padding, filename, gtline, text, confidence, confidence_threshold):
     """ Use bbox information and tesseract to redo ocr """
     # Find all <TextLine> elements+
     with PyTessBaseAPI(lang=lang, psm=7) as api:
         # Set necessary information
+        lindex = 0
+        fulltext_orig = ""
+        fulltext = ""
+        if gtline:
+            linefolder = filename.parent.joinpath(filename.name.split('.', 1)[0].replace('.', '_')).joinpath('gtlines')
+            linefolder.mkdir(exist_ok=True, parents=True)
+        if text:
+            textfolder = filename.parent.joinpath(filename.name.split('.', 1)[0].replace('.', '_')).joinpath('text')
+            textfolder.mkdir(exist_ok=True, parents=True)
         for lines in xml.iterfind('.//{%s}TextLine' % xmlns):
+            if gtline or text or confidence:
+                textline_orig = ""
+                wc = []
+                for line in lines.findall('{%s}String' % xmlns):
+                    # Check if there are no hyphenated words
+                    wc.append(float(line.attrib.get('WC')))
+                    if ('SUBS_CONTENT' not in line.attrib and 'SUBS_TYPE' not in line.attrib):
+                        # Get value of attribute @CONTENT from all <String> elements
+                        textline_orig += line.attrib.get('CONTENT') + ' '
+                    else:
+                        if ('HypPart1' in line.attrib.get('SUBS_TYPE')):
+                            textline_orig += line.attrib.get('SUBS_CONTENT') + ' '
+                            if ('HypPart2' in line.attrib.get('SUBS_TYPE')):
+                                pass
+                wc = round((sum(wc)/len(wc))*100, 2)
+                textline_orig = textline_orig.strip()
+            if confidence and confidence_threshold.isdigit() and wc < float(confidence_threshold):
+                lindex += 1
+                if text:
+                    fulltext += textline_orig + '\n'
+                    fulltext_orig += textline_orig + '\n'
+                continue
             # New line after every <TextLine> element
             x1, y1, = int(lines.attrib['HPOS']), int(lines.attrib['VPOS'])
             x2, y2 = x1+int(lines.attrib['WIDTH']), y1+int(lines.attrib['HEIGHT'])
             if padding:
-                if padding > x1 and padding > 2:
-                    x1, y1, x2, y2 = x1-padding, y1-padding, x2+padding, y2+padding
+                if x1-padding[0] >= 0 and y1-padding[1] >= 0 \
+                        and x2+padding[2] <= image.width and y2+padding[3] <= image.height:
+                    x1, y1, x2, y2 = x1-padding[0], y1-padding[1], x2+padding[2], y2+padding[3]
             line_img = image.crop((x1, y1, x2, y2))
             api.SetImage(line_img)
             api.Recognize()
@@ -86,11 +120,21 @@ def alto_redo_ocr(alto, xml, xmlns, lang, image, padding):
             for line in iterate_level(ri, RIL.TEXTLINE):
                 string_index = 0
                 if not line.Empty(RIL.TEXTLINE):
+                    if gtline:
+                        line_img.save(linefolder.joinpath(filename.with_suffix('').name+f'_line_{lindex:04d}.png'))
+                        with open((linefolder.joinpath(filename.with_suffix('').name+f'_line_{lindex:04d}.orig.gt.txt')), 'w') as fout:
+                            fout.write(textline_orig)
+                        with open((linefolder.joinpath(filename.with_suffix('').name+f'_line_{lindex:04d}.gt.txt')), 'w') as fout:
+                            fout.write(line.GetUTF8Text(RIL.TEXTLINE).strip())
+                        lindex += 1
+                    if text:
+                        fulltext += line.GetUTF8Text(RIL.TEXTLINE).strip()+'\n'
+                        fulltext_orig += textline_orig+'\n'
                     for word in iterate_level(line, RIL.WORD):
                         content = word.GetUTF8Text(RIL.WORD).strip()
                         wc = word.Confidence(RIL.WORD)# r == ri
                         lx1, ly1, lx2, ly2 = word.BoundingBoxInternal(RIL.WORD)
-                        if any((hpos,vpos,width,height)):
+                        if any((hpos, vpos, width, height)):
                             el = ET.XML(f'<SP WIDTH="{x1+lx1-(hpos+width)}" VPOS="{vpos}" HPOS="{hpos+width}"/>')
                             el.tail = tailstr
                             lines.append(el)
@@ -101,6 +145,11 @@ def alto_redo_ocr(alto, xml, xmlns, lang, image, padding):
                         el.tail = tailstr
                         lines.append(el)
                         string_index += 1
+        if text:
+            with open((textfolder.joinpath(filename.with_suffix('').name+f'.orig.txt')), 'w') as fout1:
+                fout1.write(fulltext_orig)
+            with open((textfolder.joinpath(filename.with_suffix('').name+f'.txt')), 'w') as fout2:
+                fout2.write(fulltext)
 
 
 def checkURL(url):
@@ -110,6 +159,7 @@ def checkURL(url):
     if res.getcode() == 200:
         return True
     return False
+
 
 def load_image(xml, xmlns, filename, imagefolder):
     """ Load the image from file or url"""
@@ -134,6 +184,15 @@ def load_image(xml, xmlns, filename, imagefolder):
             if what(fname):
                 return Image.open(fname)
     return None
+
+
+def get_padding(paddingstr):
+    if paddingstr.isdigit(): return [int(paddingstr)]*4
+    paddingstrs = paddingstr.split(',')
+    if len(paddingstrs) == 4:
+        return [int(paddingval) for paddingval in paddingstrs]
+    return None
+
 
 def alto_text(xml, xmlns):
     """ Extract text content from ALTO xml file """
@@ -243,7 +302,8 @@ def parse_arguments():
                         action='store_true',
                         default=False,
                         dest='text',
-                        help='extract text content from ALTO file')
+                        help='extract text content from ALTO file can be used with reocr to extract the original text'
+                             'and the new one')
     parser.add_argument('-r', '--reocr',
                         action='store_true',
                         default=False,
@@ -256,7 +316,8 @@ def parse_arguments():
     parser.add_argument('--padding',
                         default='0',
                         dest='padding',
-                        help='Extra padding around the bbox')
+                        help='Extra padding around the bbox '
+                             '(e.g. "8,3,6,3" = "left, up, right, down" or "5" = 5 to all direction')
     parser.add_argument('--imagefolder',
                         default='',
                         dest='imagefolder',
@@ -266,6 +327,15 @@ def parse_arguments():
                         default=False,
                         dest='backup',
                         help='Backup original xml file')
+    parser.add_argument('--gtline',
+                        action='store_true',
+                        default=False,
+                        dest='gtline',
+                        help='Stores each line image (.png) and the old text (.old.gt.txt) and the new text (.gt.txt)')
+    parser.add_argument('--confidence-threshold',
+                        default="60.00",
+                        dest='confidence_threshold',
+                        help='If confidence is active only a line with lower confidence values will be reocrd')
     parser.add_argument('-l', '--illustrations',
                         action='store_true',
                         default=False,
@@ -334,15 +404,19 @@ def main():
                 raise(e)
             if args.reocr:
                 image = load_image(xml, xmlns, filename, args.imagefolder)
-                padding = int(args.padding) if args.padding.isdigit() else 0
+                padding = get_padding(args.padding)
                 if image:
-                    alto_redo_ocr(alto, xml, xmlns, args.lang, image, padding)
+                    filename = Path(filename)
+                    alto_redo_ocr(alto, xml, xmlns, args.lang, image,
+                                  padding, filename, args.gtline, args.text, args.confidence, args.confidence_threshold)
                     if args.backup:
-                        backupfolder = Path(filename).parent.joinpath('backup')
+                        backupfolder = filename.parent.joinpath('backup')
                         backupfolder.mkdir(exist_ok=True)
-                        shutil.move(filename, str(backupfolder.resolve()))
+                        backupfolderfile = backupfolder.joinpath(filename.name)
+                        backupfolderfile.unlink(missing_ok=True)
+                        shutil.move(str(filename.resolve()), str(backupfolder.resolve()))
                     ET.register_namespace('', xmlns)
-                    xml.write(filename, encoding='utf-8', xml_declaration=True)
+                    xml.write(str(filename.resolve()), encoding='utf-8', xml_declaration=True)
             else:
                 if args.confidence:
                     confidence_sum += alto_confidence(alto, xml, xmlns)
