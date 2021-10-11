@@ -27,7 +27,15 @@ It is now possible to use an url to an existing alto file instead of a locally e
     `python3 alto-tools.py alto.xml -r`
 
 ####  Options to extend and tweak the reOCR process
-  * padding pixel to the lineimage with either four values or one value for all four
+  * add path/url to image-files, if the url points directly to file you need to add an @ in front of the url.
+
+    `{reocr-cmd} --imagepath /{path}/{to}/{images}`
+
+  * save image file in output folder
+
+    `{reocr-cmd} --save-image`
+
+  * padding pixel to the line-image with either four values or one value for all four
     directions
 
     `{reocr-cmd} --padding 8,3,6,3`
@@ -42,7 +50,7 @@ It is now possible to use an url to an existing alto file instead of a locally e
   * create a textfile containing the original and one containing the new text content
 
     `{reocr-cmd} -t`
-  * only do the reocr for lines which are lower than the threshold (default: 60%)
+  * only do the reocr for lines which are lower than the threshold (default: 60 %)
 
     `{reocr-cmd} -c`
   * set the confidence threshold e.g. 90 for 90 %

@@ -346,6 +346,11 @@ def parse_arguments():
                         dest='imagepath',
                         help='Path to images (default: use image-filename in the sourceImageInformation section).'
                              'With an @ in front it points directly to the imagefile, eg. @./{filename}.jpg')
+    parser.add_argument('--save-image',
+                        action='store_true',
+                        default=False,
+                        dest='save_image',
+                        help='Saves the image in the outputpath')
     parser.add_argument('--backup',
                         action='store_true',
                         default=False,
@@ -387,10 +392,10 @@ def walker(inputs, output):
     """
     for i in inputs:
         if i.startswith(('http://', 'https://')) and checkURL(i):
-            outputfolder = Path('.') if output == "" else Path(output)
-            outputfolder.mkdir(exist_ok=True)
-            xmlpath = outputfolder.joinpath(i.rsplit("/", 1)[1])
-            with open(outputfolder.joinpath(i.rsplit("/", 1)[1]), "wb") as fout:
+            outputpath = Path('.') if output == "" else Path(output)
+            outputpath.mkdir(exist_ok=True)
+            xmlpath = outputpath.joinpath(i.rsplit("/", 1)[1])
+            with open(outputpath.joinpath(i.rsplit("/", 1)[1]), "wb") as fout:
                 fout.write(request.urlopen(i).read())
             yield xmlpath
         if os.path.isfile(i):
@@ -435,19 +440,21 @@ def main():
             except ET.ParseError as e:
                 print("Error parsing %s" % str(filename.resolve()), file=sys.stderr)
                 raise(e)
-            outpufolder = filename.parent.joinpath(filename.name.split('.', 1)[0].replace('.', '_')) if args.output != "" else Path(args.output).joinpath(filename.name.split('.', 1)[0].replace('.', '_'))
-
+            outputpath = filename.parent.joinpath(filename.name.split('.', 1)[0].replace('.', '_')) if \
+                args.output != "" else Path(args.output).joinpath(filename.name.split('.', 1)[0].replace('.', '_'))
             if args.reocr:
                 image = load_image(xml, xmlns, filename, args.imagepath)
                 padding = get_padding(args.padding)
                 if image:
-                    alto_redo_ocr(alto, xml, xmlns, args.lang, image,padding, filename, outpufolder,
+                    if args.save_image:
+                        image.save(outputpath.joinpath(filename.with_suffix('.png')))
+                    alto_redo_ocr(alto, xml, xmlns, args.lang, image,padding, filename, outputpath,
                                   args.gtline, args.text, args.confidence, args.confidence_threshold)
                     if args.backup:
-                        outpufolder.mkdir(exist_ok=True)
-                        backupfolderfile = outpufolder.joinpath(filename.name)
+                        outputpath.mkdir(exist_ok=True)
+                        backupfolderfile = outputpath.joinpath(filename.name)
                         backupfolderfile.unlink(missing_ok=True)
-                        shutil.move(str(filename.resolve()), str(outpufolder.resolve()))
+                        shutil.move(str(filename.resolve()), str(outputpath.resolve()))
                     ET.register_namespace('', xmlns)
                     xml.write(str(filename.resolve()), encoding='utf-8', xml_declaration=True)
             else:
