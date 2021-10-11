@@ -65,7 +65,7 @@ def convert_bbox_to_areapos(x1, y1, x2, y2):
     return (x1, y1, x2-x1, y2-y1)
 
 
-def alto_redo_ocr(alto, xml, xmlns, lang, image, padding, filename, gtline, text, confidence, confidence_threshold):
+def alto_redo_ocr(alto, xml, xmlns, lang, image, padding, filename, outputpath, gtline, text, confidence, confidence_threshold):
     """ Use bbox information and tesseract to redo ocr """
     # Find all <TextLine> elements+
     with PyTessBaseAPI(lang=lang, psm=7) as api:
@@ -74,10 +74,10 @@ def alto_redo_ocr(alto, xml, xmlns, lang, image, padding, filename, gtline, text
         fulltext_orig = ""
         fulltext = ""
         if gtline:
-            linefolder = filename.parent.joinpath(filename.name.split('.', 1)[0].replace('.', '_')).joinpath('gtlines')
+            linefolder = outputpath.joinpath('gtlines')
             linefolder.mkdir(exist_ok=True, parents=True)
         if text:
-            textfolder = filename.parent.joinpath(filename.name.split('.', 1)[0].replace('.', '_')).joinpath('text')
+            textfolder = outputpath.joinpath('text')
             textfolder.mkdir(exist_ok=True, parents=True)
         for lines in xml.iterfind('.//{%s}TextLine' % xmlns):
             if gtline or text or confidence:
@@ -180,7 +180,7 @@ def load_image(xml, xmlns, filename, imagepath):
                     return Image.open(request.urlopen(imagepath[1:]))
             else:
                 for ext in ['.jpg', '.png', '.tiff', '.tif', '.jp2']:
-                    imagename = imagepath.strip('/')+"/"+Path(filename).with_suffix('').name+ext
+                    imagename = imagepath.strip('/')+"/"+filename.with_suffix('').name+ext
                     if checkURL(imagename):
                         return Image.open(request.urlopen(imagename))
         except:
@@ -307,11 +307,11 @@ def parse_arguments():
         usage='python %(prog)s INPUT [options]')
     parser.add_argument('INPUT',
                         nargs='+',
-                        help='path to ALTO file')
+                        help='path to ALTO file (add a * to the end of the path for recursive search)')
     parser.add_argument('-o', '--output',
                         default='',
                         dest='output',
-                        help='path to output directory (if none specified, CWD is used)')
+                        help='path to output directory (if none specified the altofolder is used)')
     parser.add_argument('-v', '--version',
                         action='version',
                         version=__version__,
@@ -377,7 +377,7 @@ def parse_arguments():
     return args
 
 
-def walker(inputs, output, fnfilter=lambda fn: True, *kwargs):
+def walker(inputs, output):
     """
     Returns all file names in inputs, and recursively for directories.
 
@@ -392,15 +392,17 @@ def walker(inputs, output, fnfilter=lambda fn: True, *kwargs):
             xmlpath = outputfolder.joinpath(i.rsplit("/", 1)[1])
             with open(outputfolder.joinpath(i.rsplit("/", 1)[1]), "wb") as fout:
                 fout.write(request.urlopen(i).read())
-            yield str(xmlpath.resolve())
+            yield xmlpath
         if os.path.isfile(i):
-            yield i
+            yield Path(i)
+        elif i.endswith('*'):
+            for file in Path(i[:-1]).rglob('*'):
+                if file.suffix in ['.xml', '.alto']:
+                    yield file
         else:
-            for root, _, files in os.walk(i):
-                for f in files:
-                    if fnfilter(f):
-                        yield os.path.join(root, f)
-
+            for file in Path(i).glob('*'):
+                if file.suffix in ['.xml', '.alto']:
+                    yield file
 
 def main():
     if sys.version_info < (3, 0):
@@ -413,13 +415,9 @@ def main():
         os.system('python alto_tools.py -h')
         sys.exit(-1)
     else:
-        fnfilter = lambda fn: fn.endswith('.xml') or fn.endswith('.alto')
         confidence_sum = 0
-        fpaths = [str(Path(fpath).resolve()) if not fpath.startswith(('http://', 'https://')) else fpath
-                  for fpath in args.INPUT]
         number_of_files = 0
-        for filename in tqdm(walker(fpaths, args.output, fnfilter)):
-            number_of_files += 1
+        for number_of_files, filename in tqdm(enumerate(walker(args.INPUT, args.output))):
             try:
                 if args.xml_encoding:
                     xml_encoding = args.xml_encoding
@@ -435,21 +433,21 @@ def main():
             except IndexError:
                 continue
             except ET.ParseError as e:
-                print("Error parsing %s" % filename, file=sys.stderr)
+                print("Error parsing %s" % str(filename.resolve()), file=sys.stderr)
                 raise(e)
+            outpufolder = filename.parent.joinpath(filename.name.split('.', 1)[0].replace('.', '_')) if args.output != "" else Path(args.output).joinpath(filename.name.split('.', 1)[0].replace('.', '_'))
+
             if args.reocr:
                 image = load_image(xml, xmlns, filename, args.imagepath)
                 padding = get_padding(args.padding)
                 if image:
-                    filename = Path(filename)
-                    alto_redo_ocr(alto, xml, xmlns, args.lang, image,
-                                  padding, filename, args.gtline, args.text, args.confidence, args.confidence_threshold)
+                    alto_redo_ocr(alto, xml, xmlns, args.lang, image,padding, filename, outpufolder,
+                                  args.gtline, args.text, args.confidence, args.confidence_threshold)
                     if args.backup:
-                        backupfolder = filename.parent.joinpath('backup')
-                        backupfolder.mkdir(exist_ok=True)
-                        backupfolderfile = backupfolder.joinpath(filename.name)
+                        outpufolder.mkdir(exist_ok=True)
+                        backupfolderfile = outpufolder.joinpath(filename.name)
                         backupfolderfile.unlink(missing_ok=True)
-                        shutil.move(str(filename.resolve()), str(backupfolder.resolve()))
+                        shutil.move(str(filename.resolve()), str(outpufolder.resolve()))
                     ET.register_namespace('', xmlns)
                     xml.write(str(filename.resolve()), encoding='utf-8', xml_declaration=True)
             else:
@@ -462,6 +460,7 @@ def main():
         if number_of_files >= 2:
             print(
                 f"\n\nConfidence of folder: {round(confidence_sum/number_of_files, 2)}")
+
 
 if __name__ == "__main__":
     main()
