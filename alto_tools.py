@@ -141,7 +141,7 @@ def alto_redo_ocr(alto, xml, xmlns, lang, image, padding, filename, gtline, text
                         hpos, vpos, width, height = convert_bbox_to_areapos(x1+lx1, y1+ly1, x1+lx2, y1+ly2)
                         el = ET.XML(f'<String ID="string_{string_index}" '
                                             f'HPOS="{hpos}" VPOS="{vpos}" WIDTH="{width}" HEIGHT="{height}" '
-                                            f'WC="{wc/100:.2f}" CONTENT="{escape(content)}"/>')
+                                            f'WC="{wc/100:.4f}" CONTENT="{escape(content)}"/>')
                         el.tail = tailstr
                         lines.append(el)
                         string_index += 1
@@ -154,27 +154,33 @@ def alto_redo_ocr(alto, xml, xmlns, lang, image, padding, filename, gtline, text
 
 def checkURL(url):
     """This function checks the validity of URLs."""
-    req = request.Request(url, method='HEAD')
-    res = request.urlopen(req)
-    if res.getcode() == 200:
-        return True
+    try:
+        req = request.Request(url, method='HEAD')
+        res = request.urlopen(req)
+        if res.getcode() == 200:
+            return True
+    except:
+        return False
     return False
 
 
-def load_image(xml, xmlns, filename, imagefolder):
+def load_image(xml, xmlns, filename, imagepath):
     """ Load the image from file or url"""
-    if imagefolder == "" or imagefolder.startswith("https://") or imagefolder.startswith("http://"):
+    if imagepath == "" or imagepath.startswith(("https://", "http://", "@https://", "@http://")):
         try:
-            if imagefolder == "":
+            if imagepath == "":
                 for imagefile in xml.iterfind('.//{%s}sourceImageInformation' % xmlns):
                     imagename = imagefile.find('{%s}fileName' % xmlns).text
                     if os.path.isfile(imagename):
                        return Image.open(imagename)
-                    if checkURL(imagename):
+                    elif checkURL(imagename):
                         return Image.open(request.urlopen(imagename))
+            elif imagepath.startswith('@'):
+                if checkURL(imagepath[1:]):
+                    return Image.open(request.urlopen(imagepath[1:]))
             else:
                 for ext in ['.jpg', '.png', '.tiff', '.tif', '.jp2']:
-                    imagename = imagefolder+"/"+filename.replace(".xml", ext)
+                    imagename = imagepath.strip('/')+"/"+Path(filename).with_suffix('').name+ext
                     if checkURL(imagename):
                         return Image.open(request.urlopen(imagename))
         except:
@@ -182,11 +188,22 @@ def load_image(xml, xmlns, filename, imagefolder):
             return None
     else:
         filename = Path(filename)
-        if imagefolder in [".", "./"]:
-            imagefolder = filename.parent
+        if imagepath.startswith('@'):
+            if os.path.isfile(imagepath[1:]):
+                return Image.open(imagepath[1:])
+        elif imagepath.startswith('..'):
+            imagepath = imagepath.split('..')
+            for _ in range(0, len(imagepath)):
+                filename = filename.parent
+            imagepath = filename.joinpath(imagepath[-1][1:])
+        elif imagepath.startswith('.'):
+            if imagepath in ['.', './']:
+                imagepath = filename.parent
+            else:
+                imagepath = filename.parent.joinpath(imagepath[2:])
         else:
-            imagefolder = Path(imagefolder)
-        for fname in imagefolder.rglob(filename.with_suffix('').name+'*'):
+            imagepath = Path(imagepath)
+        for fname in imagepath.rglob(filename.with_suffix('').name+'*'):
             if what(fname):
                 return Image.open(fname)
     return None
@@ -324,10 +341,11 @@ def parse_arguments():
                         dest='padding',
                         help='Extra padding around the bbox '
                              '(e.g. "8,3,6,3" = "left, up, right, down" or "5" = 5 to all direction')
-    parser.add_argument('--imagefolder',
+    parser.add_argument('--imagepath',
                         default='',
-                        dest='imagefolder',
-                        help='Path to images (default: use image-filename in the sourceImageInformation section)')
+                        dest='imagepath',
+                        help='Path to images (default: use image-filename in the sourceImageInformation section).'
+                             'With an @ in front it points directly to the imagefile, eg. @./{filename}.jpg')
     parser.add_argument('--backup',
                         action='store_true',
                         default=False,
@@ -359,7 +377,7 @@ def parse_arguments():
     return args
 
 
-def walker(inputs, fnfilter=lambda fn: True):
+def walker(inputs, output, fnfilter=lambda fn: True, *kwargs):
     """
     Returns all file names in inputs, and recursively for directories.
 
@@ -368,6 +386,13 @@ def walker(inputs, fnfilter=lambda fn: True):
     - a directory: return all files in it, recursively, filtered by fnfilter.
     """
     for i in inputs:
+        if i.startswith(('http://', 'https://')) and checkURL(i):
+            outputfolder = Path('.') if output == "" else Path(output)
+            outputfolder.mkdir(exist_ok=True)
+            xmlpath = outputfolder.joinpath(i.rsplit("/", 1)[1])
+            with open(outputfolder.joinpath(i.rsplit("/", 1)[1]), "wb") as fout:
+                fout.write(request.urlopen(i).read())
+            yield str(xmlpath.resolve())
         if os.path.isfile(i):
             yield i
         else:
@@ -390,7 +415,11 @@ def main():
     else:
         fnfilter = lambda fn: fn.endswith('.xml') or fn.endswith('.alto')
         confidence_sum = 0
-        for filename in tqdm(walker(args.INPUT, fnfilter)):
+        fpaths = [str(Path(fpath).resolve()) if not fpath.startswith(('http://', 'https://')) else fpath
+                  for fpath in args.INPUT]
+        number_of_files = 0
+        for filename in tqdm(walker(fpaths, args.output, fnfilter)):
+            number_of_files += 1
             try:
                 if args.xml_encoding:
                     xml_encoding = args.xml_encoding
@@ -409,7 +438,7 @@ def main():
                 print("Error parsing %s" % filename, file=sys.stderr)
                 raise(e)
             if args.reocr:
-                image = load_image(xml, xmlns, filename, args.imagefolder)
+                image = load_image(xml, xmlns, filename, args.imagepath)
                 padding = get_padding(args.padding)
                 if image:
                     filename = Path(filename)
@@ -430,7 +459,6 @@ def main():
                     alto_text(xml, xmlns)
                 if args.illustrations:
                     alto_illustrations(xml, xmlns)
-        number_of_files = len(list(walker(args.INPUT, fnfilter)))
         if number_of_files >= 2:
             print(
                 f"\n\nConfidence of folder: {round(confidence_sum/number_of_files, 2)}")
