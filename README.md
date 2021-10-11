@@ -45,9 +45,9 @@ It is now possible to use an url to an existing alto file instead of a locally e
   * only do the reocr for lines which are lower than the threshold (default: 60%)
 
     `{reocr-cmd} -c`
-  * set the confidence threshold
+  * set the confidence threshold e.g. 90 for 90 %
 
-    `{reocr-cmd} -c --confidence-threshold XX%`
+    `{reocr-cmd} -c --confidence-threshold 90`
 
 ## Planned
 
