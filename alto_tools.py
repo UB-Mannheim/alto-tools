@@ -70,7 +70,6 @@ def alto_redo_ocr(alto, xml, xmlns, lang, image, padding, filename, outputpath, 
     # Find all <TextLine> elements+
     with PyTessBaseAPI(lang=lang, psm=7) as api:
         # Set necessary information
-        lindex = 0
         fulltext_orig = ""
         fulltext = ""
         if gtline:
@@ -79,7 +78,7 @@ def alto_redo_ocr(alto, xml, xmlns, lang, image, padding, filename, outputpath, 
         if text:
             textfolder = outputpath.joinpath('text')
             textfolder.mkdir(exist_ok=True, parents=True)
-        for lines in xml.iterfind('.//{%s}TextLine' % xmlns):
+        for line_index, lines in enumerate(xml.iterfind('.//{%s}TextLine' % xmlns)):
             if gtline or text or confidence:
                 textline_orig = ""
                 wc = []
@@ -97,7 +96,6 @@ def alto_redo_ocr(alto, xml, xmlns, lang, image, padding, filename, outputpath, 
                 wc = round((sum(wc)/len(wc))*100, 2)
                 textline_orig = textline_orig.strip()
             if confidence and confidence_threshold.isdigit() and wc < float(confidence_threshold):
-                lindex += 1
                 if text:
                     fulltext += textline_orig + '\n'
                     fulltext_orig += textline_orig + '\n'
@@ -118,19 +116,17 @@ def alto_redo_ocr(alto, xml, xmlns, lang, image, padding, filename, outputpath, 
             hpos, vpos, width, height = 0, 0, 0, 0
             tailstr = lines.tail+'\t'
             for line in iterate_level(ri, RIL.TEXTLINE):
-                string_index = 0
                 if not line.Empty(RIL.TEXTLINE):
                     if gtline:
-                        line_img.save(linefolder.joinpath(filename.with_suffix('').name+f'_line_{lindex:04d}.png'))
-                        with open((linefolder.joinpath(filename.with_suffix('').name+f'_line_{lindex:04d}.orig.gt.txt')), 'w') as fout:
+                        line_img.save(linefolder.joinpath(filename.with_suffix('').name+f'_line_{line_index:04d}.png'))
+                        with open((linefolder.joinpath(filename.with_suffix('').name+f'_line_{line_index:04d}.orig.gt.txt')), 'w') as fout:
                             fout.write(textline_orig)
-                        with open((linefolder.joinpath(filename.with_suffix('').name+f'_line_{lindex:04d}.gt.txt')), 'w') as fout:
+                        with open((linefolder.joinpath(filename.with_suffix('').name+f'_line_{line_index:04d}.gt.txt')), 'w') as fout:
                             fout.write(line.GetUTF8Text(RIL.TEXTLINE).strip())
-                        lindex += 1
                     if text:
                         fulltext += line.GetUTF8Text(RIL.TEXTLINE).strip()+'\n'
                         fulltext_orig += textline_orig+'\n'
-                    for word in iterate_level(line, RIL.WORD):
+                    for word_index, word in enumerate(iterate_level(line, RIL.WORD)):
                         content = word.GetUTF8Text(RIL.WORD).strip()
                         wc = word.Confidence(RIL.WORD)# r == ri
                         lx1, ly1, lx2, ly2 = word.BoundingBoxInternal(RIL.WORD)
@@ -139,12 +135,11 @@ def alto_redo_ocr(alto, xml, xmlns, lang, image, padding, filename, outputpath, 
                             el.tail = tailstr
                             lines.append(el)
                         hpos, vpos, width, height = convert_bbox_to_areapos(x1+lx1, y1+ly1, x1+lx2, y1+ly2)
-                        el = ET.XML(f'<String ID="string_{string_index}" '
+                        el = ET.XML(f'<String ID="string_{word_index}" '
                                             f'HPOS="{hpos}" VPOS="{vpos}" WIDTH="{width}" HEIGHT="{height}" '
                                             f'WC="{wc/100:.4f}" CONTENT="{escape(content)}"/>')
                         el.tail = tailstr
                         lines.append(el)
-                        string_index += 1
         if text:
             with open((textfolder.joinpath(filename.with_suffix('').name+f'.orig.txt')), 'w') as fout1:
                 fout1.write(fulltext_orig)
