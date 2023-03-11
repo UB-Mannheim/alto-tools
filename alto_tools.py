@@ -65,7 +65,7 @@ def convert_bbox_to_areapos(x1, y1, x2, y2):
 
 
 def alto_redo_ocr(alto, xml, xmlns, lang, image, padding, filename, outputpath, gtline, text, confidence, confidence_threshold):
-    """ Use bbox information and tesseract to redo ocr """
+    """ Use bbox information and tesseract to redo OCR """
     # Find all <TextLine> elements+
     with PyTessBaseAPI(lang=lang, psm=7) as api:
         # Set necessary information
@@ -307,7 +307,7 @@ def parse_arguments():
     parser.add_argument('-o', '--output',
                         default='',
                         dest='output',
-                        help='path to output directory (if none specified the altofolder is used)')
+                        help='path to output directory (if none specified the ALTO folder is used)')
     parser.add_argument('-v', '--version',
                         action='version',
                         version=__version__,
@@ -321,13 +321,14 @@ def parse_arguments():
                         action='store_true',
                         default=False,
                         dest='text',
-                        help='extract text content from ALTO file can be used with reocr to extract the original text'
-                             'and the new one')
+                        help='extract text content from ALTO file '
+                             '(can be used with --reocr to extract '
+                             'the original text and the new one)')
     parser.add_argument('-r', '--reocr',
                         action='store_true',
                         default=False,
                         dest='reocr',
-                        help='Redo ocr based on the alto bbox with tesseract')
+                        help='Redo OCR based on the ALTO bbox with tesseract')
     parser.add_argument('--lang',
                         default='eng',
                         dest='lang',
@@ -340,7 +341,8 @@ def parse_arguments():
     parser.add_argument('--imagepath',
                         default='',
                         dest='imagepath',
-                        help='Path to images (default: use image-filename in the sourceImageInformation section).'
+                        help='Path to images (default: use image-filename '
+                             'in the sourceImageInformation section). '
                              'With an @ in front it points directly to the imagefile, eg. @./{filename}.jpg')
     parser.add_argument('--save-image',
                         action='store_true',
