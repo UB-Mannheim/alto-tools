@@ -9,13 +9,12 @@ import os
 import re
 import sys
 from urllib import request
-from imghdr import what
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 from pathlib import Path
 import shutil
 
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from tesserocr import PyTessBaseAPI, RIL, iterate_level
 from tqdm import tqdm
 
@@ -199,8 +198,10 @@ def load_image(xml, xmlns, filename, imagepath):
         else:
             imagepath = Path(imagepath)
         for fname in imagepath.rglob(filename.with_suffix('').name+'*'):
-            if what(fname):
+            try:
                 return Image.open(fname)
+            except UnidentifiedImageError:
+                pass
     return None
 
 
